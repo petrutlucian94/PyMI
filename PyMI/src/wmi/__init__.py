@@ -19,6 +19,7 @@ import importlib
 import re
 import six
 import struct
+import time
 import weakref
 
 import mi
@@ -64,6 +65,13 @@ def _get_eventlet_original(module_name):
 # In order to enable it, this value must be set.
 DEFAULT_OPERATION_TIMEOUT = None
 
+# Some queries fail with "x_wmi: <x_wmi: Invalid property  >"
+# This seems to be a Windows bug, the error occuring only on
+# certain environments that don't include latest Windows updates.
+# We'll do some retries for the moment.
+QUERY_RETRY_COUNT = 10
+QUERY_RETRY_INTERVAL_MIN = 1
+QUERY_RETRY_INTERVAL_MAX = 10
 
 class x_wmi(Exception):
     def __init__(self, info="", com_error=None):
@@ -361,8 +369,24 @@ class _Class(_BaseEntity):
                {"fields": fields,
                 "class_name": self.class_name,
                 "where": where})
-        return self._conn.query(
-            wql, operation_options=operation_options)
+
+        retry_count = 0
+        retry_interval = QUERY_RETRY_INTERVAL_MIN
+        while True:
+            try:
+                return self._conn.query(
+                    wql, operation_options=operation_options)
+            except x_wmi as ex:
+                retry_count += 1
+                if retry_count > QUERY_RETRY_COUNT:
+                    raise
+                else:
+                    print("WMI query failed after %s attempts. Error: %s. "
+                          "Query: %s. Retrying in %s seconds." %
+                          (retry_count + 1, ex, wql, retry_interval))
+                    time.sleep(retry_interval)
+                    retry_interval = min(retry_interval + 1,
+                                         QUERY_RETRY_INTERVAL_MAX)
 
     @mi_to_wmi_exception
     def new(self):
